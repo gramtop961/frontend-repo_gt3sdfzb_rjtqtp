@@ -28,6 +28,17 @@ function downloadCSV(filename, rows) {
   document.body.removeChild(link);
 }
 
+function downloadExcelHTML(filename, html) {
+  // Minimal HTML table compatible with Excel
+  const blob = new Blob([`\ufeff${html}`], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename.endsWith('.xls') ? filename : `${filename}.xls`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 export default function AttendanceGrades({ classes, students, entries, setEntries }) {
   const [classId, setClassId] = useState(classes[0]?.id || '');
   const classStudents = useMemo(() => students.filter((s) => s.classId === classId), [students, classId]);
@@ -36,40 +47,40 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [score, setScore] = useState('');
   const [note, setNote] = useState('');
-  const [present, setPresent] = useState(true);
+  const [status, setStatus] = useState('hadir'); // hadir, izin, sakit, alfa
 
   const [editingId, setEditingId] = useState(null);
   const filteredEntries = useMemo(() => entries.filter((e) => e.studentId === studentId), [entries, studentId]);
 
   const addEntry = () => {
     if (!studentId) return alert('Pilih siswa');
-    const s = Number(score);
-    if (Number.isNaN(s)) return alert('Nilai harus angka');
+    const s = score === '' ? null : Number(score);
+    if (score !== '' && Number.isNaN(s)) return alert('Nilai harus angka atau kosong');
     setEntries((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), studentId, date, score: s, note, present },
+      { id: crypto.randomUUID(), studentId, date, score: s, note, status },
     ]);
     setScore('');
     setNote('');
-    setPresent(true);
+    setStatus('hadir');
   };
 
   const startEdit = (e) => {
     setEditingId(e.id);
     setDate(e.date);
-    setScore(String(e.score));
+    setScore(e.score === null || e.score === undefined ? '' : String(e.score));
     setNote(e.note || '');
-    setPresent(!!e.present);
+    setStatus(e.status || 'hadir');
   };
 
   const saveEdit = () => {
-    const s = Number(score);
-    if (Number.isNaN(s)) return;
-    setEntries((prev) => prev.map((e) => (e.id === editingId ? { ...e, date, score: s, note, present } : e)));
+    const s = score === '' ? null : Number(score);
+    if (score !== '' && Number.isNaN(s)) return;
+    setEntries((prev) => prev.map((e) => (e.id === editingId ? { ...e, date, score: s, note, status } : e)));
     setEditingId(null);
     setScore('');
     setNote('');
-    setPresent(true);
+    setStatus('hadir');
   };
 
   const removeEntry = (id) => {
@@ -80,12 +91,18 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
   const calculations = useMemo(() => {
     const byMonth = {};
     const bySemester = { 1: [], 2: [] };
+    const statusCount = { hadir: 0, izin: 0, sakit: 0, alfa: 0 };
+
     filteredEntries.forEach((e) => {
       const m = new Date(e.date).getMonth();
-      byMonth[m] = byMonth[m] || [];
-      byMonth[m].push(e.score);
-      const sem = getSemesterFromMonth(m);
-      bySemester[sem].push(e.score);
+      statusCount[e.status || 'hadir'] += 1;
+      // Hanya nilai dengan status hadir yang dihitung
+      if ((e.status || 'hadir') === 'hadir' && typeof e.score === 'number') {
+        byMonth[m] = byMonth[m] || [];
+        byMonth[m].push(e.score);
+        const sem = getSemesterFromMonth(m);
+        bySemester[sem].push(e.score);
+      }
     });
     const monthly = Object.entries(byMonth).map(([m, arr]) => ({
       month: Number(m),
@@ -93,7 +110,7 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
     })).sort((a, b) => a.month - b.month);
     const sem1 = bySemester[1].length ? bySemester[1].reduce((a, b) => a + b, 0) / bySemester[1].length : 0;
     const sem2 = bySemester[2].length ? bySemester[2].reduce((a, b) => a + b, 0) / bySemester[2].length : 0;
-    return { monthly, sem1, sem2 };
+    return { monthly, sem1, sem2, statusCount };
   }, [filteredEntries]);
 
   const exportCSV = () => {
@@ -102,16 +119,67 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
       ['Nama', stu?.name || ''],
       ['Kelas', classes.find((c) => c.id === classId)?.name || ''],
       [],
-      ['Tanggal', 'Hadir', 'Nilai', 'Catatan'],
-      ...filteredEntries.map((e) => [e.date, e.present ? 'Ya' : 'Tidak', e.score, e.note || '']),
+      ['Tanggal', 'Status', 'Nilai', 'Catatan'],
+      ...filteredEntries.map((e) => [e.date, (e.status || 'hadir').toUpperCase(), e.score ?? '', e.note || '']),
       [],
       ['Rangkuman'],
-      ...calculations.monthly.map((m) => [monthName(m.month), '', m.avg.toFixed(2), 'Rata-rata bulanan']),
-      ['Semester 1 (Jul-Des)', '', calculations.sem1.toFixed(2), 'Rata-rata'],
-      ['Semester 2 (Jan-Jun)', '', calculations.sem2.toFixed(2), 'Rata-rata'],
+      ...calculations.monthly.map((m) => [monthName(m.month), '', m.avg.toFixed(2), 'Rata-rata bulanan (hadir)']),
+      ['Semester 1 (Jul-Des)', '', calculations.sem1.toFixed(2), 'Rata-rata (hadir)'],
+      ['Semester 2 (Jan-Jun)', '', calculations.sem2.toFixed(2), 'Rata-rata (hadir)'],
+      [],
+      ['Statistik Kehadiran'],
+      ['Hadir', calculations.statusCount.hadir],
+      ['Izin', calculations.statusCount.izin],
+      ['Sakit', calculations.statusCount.sakit],
+      ['Alfa', calculations.statusCount.alfa],
     ];
     const filename = `nilai_${stu?.name || 'siswa'}.csv`;
     downloadCSV(filename, rows);
+  };
+
+  const exportExcel = () => {
+    const stu = students.find((s) => s.id === studentId);
+    const className = classes.find((c) => c.id === classId)?.name || '';
+    const rowsHTML = filteredEntries.map((e) => `
+      <tr>
+        <td>${e.date}</td>
+        <td>${(e.status || 'hadir').toUpperCase()}</td>
+        <td>${e.score ?? ''}</td>
+        <td>${(e.note || '').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</td>
+      </tr>
+    `).join('');
+
+    const monthlyHTML = calculations.monthly.map((m) => `
+      <tr><td>${monthName(m.month)}</td><td></td><td>${m.avg.toFixed(2)}</td><td>Rata-rata bulanan (hadir)</td></tr>
+    `).join('');
+
+    const html = `
+      <html>
+        <head><meta charset="utf-8" /></head>
+        <body>
+          <table border="1">
+            <tr><th colspan="4">Nilai & Kehadiran Siswa</th></tr>
+            <tr><td>Nama</td><td colspan="3">${stu?.name || ''}</td></tr>
+            <tr><td>Kelas</td><td colspan="3">${className}</td></tr>
+            <tr><th>Tanggal</th><th>Status</th><th>Nilai</th><th>Catatan</th></tr>
+            ${rowsHTML}
+            <tr><td colspan="4"></td></tr>
+            <tr><th colspan="4">Rangkuman</th></tr>
+            ${monthlyHTML}
+            <tr><td>Semester 1 (Jul-Des)</td><td></td><td>${calculations.sem1.toFixed(2)}</td><td>Rata-rata (hadir)</td></tr>
+            <tr><td>Semester 2 (Jan-Jun)</td><td></td><td>${calculations.sem2.toFixed(2)}</td><td>Rata-rata (hadir)</td></tr>
+            <tr><td colspan="4"></td></tr>
+            <tr><th colspan="4">Statistik Kehadiran</th></tr>
+            <tr><td>Hadir</td><td colspan="3">${calculations.statusCount.hadir}</td></tr>
+            <tr><td>Izin</td><td colspan="3">${calculations.statusCount.izin}</td></tr>
+            <tr><td>Sakit</td><td colspan="3">${calculations.statusCount.sakit}</td></tr>
+            <tr><td>Alfa</td><td colspan="3">${calculations.statusCount.alfa}</td></tr>
+          </table>
+        </body>
+      </html>
+    `;
+    const filename = `nilai_${stu?.name || 'siswa'}.xls`;
+    downloadExcelHTML(filename, html);
   };
 
   const onChangeClass = (id) => {
@@ -125,7 +193,7 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
       <div className="rounded-lg border bg-white p-4 shadow-sm">
         <h2 className="text-lg font-semibold text-emerald-700">Absensi & Nilai Harian</h2>
 
-        <div className="mt-4 grid sm:grid-cols-3 gap-2">
+        <div className="mt-4 grid lg:grid-cols-3 gap-2">
           <select value={classId} onChange={(e) => onChangeClass(e.target.value)} className="rounded-md border px-3 py-2">
             <option value="">Pilih kelas</option>
             {classes.map((c) => (
@@ -138,12 +206,15 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
               <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button onClick={exportCSV} disabled={!studentId} className="inline-flex items-center gap-2 bg-emerald-600 text-white px-3 py-2 rounded-md disabled:opacity-50">
               <FileDown size={18} /> Ekspor CSV
             </button>
+            <button onClick={exportExcel} disabled={!studentId} className="inline-flex items-center gap-2 bg-emerald-700 text-white px-3 py-2 rounded-md disabled:opacity-50">
+              <FileDown size={18} /> Ekspor Excel
+            </button>
             <button onClick={() => window.print()} className="inline-flex items-center gap-2 bg-emerald-100 text-emerald-700 px-3 py-2 rounded-md">
-              Cetak/PDF
+              Cetak / PDF
             </button>
           </div>
         </div>
@@ -155,7 +226,7 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
                 <thead className="bg-emerald-50 text-emerald-800">
                   <tr>
                     <th className="text-left p-2 border-b">Tanggal</th>
-                    <th className="text-left p-2 border-b">Hadir</th>
+                    <th className="text-left p-2 border-b">Status</th>
                     <th className="text-left p-2 border-b">Nilai</th>
                     <th className="text-left p-2 border-b">Catatan</th>
                     <th className="text-left p-2 border-b">Aksi</th>
@@ -170,8 +241,8 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
                   {filteredEntries.map((e) => (
                     <tr key={e.id} className="odd:bg-white even:bg-gray-50">
                       <td className="p-2 border-b">{e.date}</td>
-                      <td className="p-2 border-b">{e.present ? 'Ya' : 'Tidak'}</td>
-                      <td className="p-2 border-b">{e.score}</td>
+                      <td className="p-2 border-b">{(e.status || 'hadir').toUpperCase()}</td>
+                      <td className="p-2 border-b">{e.score ?? ''}</td>
                       <td className="p-2 border-b">{e.note}</td>
                       <td className="p-2 border-b">
                         <div className="flex gap-2">
@@ -193,14 +264,16 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
                 <label className="block text-sm">Tanggal</label>
                 <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full rounded-md border px-3 py-2" />
 
-                <label className="block text-sm">Kehadiran</label>
-                <select value={present ? 'ya' : 'tidak'} onChange={(e) => setPresent(e.target.value === 'ya')} className="w-full rounded-md border px-3 py-2">
-                  <option value="ya">Hadir</option>
-                  <option value="tidak">Tidak Hadir</option>
+                <label className="block text-sm">Status Kehadiran</label>
+                <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full rounded-md border px-3 py-2">
+                  <option value="hadir">Hadir</option>
+                  <option value="izin">Izin</option>
+                  <option value="sakit">Sakit</option>
+                  <option value="alfa">Alfa</option>
                 </select>
 
                 <label className="block text-sm">Nilai</label>
-                <input type="number" value={score} onChange={(e) => setScore(e.target.value)} className="w-full rounded-md border px-3 py-2" placeholder="0-100" />
+                <input type="number" value={score} onChange={(e) => setScore(e.target.value)} className="w-full rounded-md border px-3 py-2" placeholder="0-100 atau kosong" />
 
                 <label className="block text-sm">Catatan</label>
                 <input value={note} onChange={(e) => setNote(e.target.value)} className="w-full rounded-md border px-3 py-2" placeholder="Opsional" />
@@ -235,6 +308,17 @@ export default function AttendanceGrades({ classes, students, entries, setEntrie
                 </div>
               </div>
             </div>
+
+            <div className="rounded-md border p-3 mt-4">
+              <div className="font-medium text-emerald-700 mb-2">Statistik Kehadiran</div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded bg-emerald-100 px-3 py-2">Hadir: <span className="font-semibold">{calculations.statusCount.hadir}</span></div>
+                <div className="rounded bg-yellow-100 px-3 py-2">Izin: <span className="font-semibold">{calculations.statusCount.izin}</span></div>
+                <div className="rounded bg-blue-100 px-3 py-2">Sakit: <span className="font-semibold">{calculations.statusCount.sakit}</span></div>
+                <div className="rounded bg-red-100 px-3 py-2">Alfa: <span className="font-semibold">{calculations.statusCount.alfa}</span></div>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
